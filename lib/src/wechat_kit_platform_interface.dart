@@ -52,6 +52,10 @@ abstract class WechatKitPlatform extends PlatformInterface {
     throw UnimplementedError('qrauthRespStream() has not been implemented.');
   }
 
+  Future<WechatReq?> getLaunchReq() {
+    throw UnimplementedError('getLaunchReq() has not been implemented.');
+  }
+
   /// 微信回调 - 冷启
   Future<void> handleInitialWXReq() {
     throw UnimplementedError('handleInitialWXReq() has not been implemented.');

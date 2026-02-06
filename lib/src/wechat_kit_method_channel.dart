@@ -109,6 +109,24 @@ class MethodChannelWechatKit extends WechatKitPlatform {
   }
 
   @override
+  Future<WechatReq?> getLaunchReq() async {
+    final raw = await methodChannel.invokeMethod<Map>('getLaunchReq');
+    if (raw == null) return null;
+    final type = raw['type'];
+    final data = raw['data'];
+    if (type is String && data is Map) {
+      final payload = data.cast<String, dynamic>();
+      if (type == 'launch') {
+        return WechatLaunchFromWXReq.fromJson(payload);
+      }
+      if (type == 'showMessage') {
+        return WechatShowMessageFromWXReq.fromJson(payload);
+      }
+    }
+    return null;
+  }
+
+  @override
   Future<bool> isInstalled() async {
     return await methodChannel.invokeMethod<bool>('isInstalled') ?? false;
   }
