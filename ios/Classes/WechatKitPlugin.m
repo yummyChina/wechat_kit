@@ -19,6 +19,10 @@ typedef void (^WechatKitWXReqRunnable)(void);
     BOOL _isRunning;
     BOOL _handleInitialWXReqFlag;
     WechatKitWXReqRunnable _initialWXReqRunnable;
+    NSURL *_pendingOpenURL;
+    NSUserActivity *_pendingUserActivity;
+    NSString *_cachedLaunchReqType;
+    NSDictionary *_cachedLaunchReqData;
 }
 
 + (void)registerWithRegistrar:(NSObject<FlutterPluginRegistrar> *)registrar {
@@ -34,7 +38,6 @@ typedef void (^WechatKitWXReqRunnable)(void);
 - (instancetype)init {
     self = [super init];
     if (self) {
-        // _channel = channel;
         _qrauth = [[WechatAuthSDK alloc] init];
         _qrauth.delegate = self;
         _isRunning = NO;
@@ -54,7 +57,19 @@ typedef void (^WechatKitWXReqRunnable)(void);
         NSString *universalLink = call.arguments[@"universalLink"];
         [WXApi registerApp:appId universalLink:universalLink];
         _isRunning = YES;
+        [self handlePendingWXOpenIfNeeded];
         result(nil);
+    } else if ([@"getLaunchReq" isEqualToString:call.method]) {
+        if (_cachedLaunchReqType != nil && _cachedLaunchReqData != nil) {
+            result(@{
+                @"type": _cachedLaunchReqType,
+                @"data": _cachedLaunchReqData,
+            });
+            _cachedLaunchReqType = nil;
+            _cachedLaunchReqData = nil;
+        } else {
+            result(nil);
+        }
     } else if ([@"handleInitialWXReq" isEqualToString:call.method]) {
         if (!_handleInitialWXReqFlag) {
             _handleInitialWXReqFlag = YES;
@@ -114,15 +129,51 @@ typedef void (^WechatKitWXReqRunnable)(void);
     }
 }
 
+- (void)handlePendingWXOpenIfNeeded {
+    if (_initialWXReqRunnable != nil) {
+        return;
+    }
+    if (_pendingOpenURL != nil) {
+        BOOL ok = [WXApi handleOpenURL:_pendingOpenURL delegate:self];
+        if (!ok && _channel != nil) {
+            NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
+            [dictionary setValue:_pendingOpenURL.absoluteString forKey:@"messageExt"];
+            [self cacheLaunchReq:@"launch" data:dictionary];
+            [_channel invokeMethod:@"onLaunchFromWXReq" arguments:dictionary];
+        }
+        _pendingOpenURL = nil;
+    }
+    if (_pendingUserActivity != nil) {
+        BOOL ok = [WXApi handleOpenUniversalLink:_pendingUserActivity delegate:self];
+        if (!ok && _channel != nil) {
+            NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
+            if ([_pendingUserActivity.webpageURL absoluteString] != nil) {
+                [dictionary setValue:_pendingUserActivity.webpageURL.absoluteString forKey:@"messageExt"];
+            }
+            [self cacheLaunchReq:@"launch" data:dictionary];
+            [_channel invokeMethod:@"onLaunchFromWXReq" arguments:dictionary];
+        }
+        _pendingUserActivity = nil;
+    }
+}
+
+- (void)cacheLaunchReq:(NSString *)type data:(NSDictionary *)data {
+    if (type == nil || data == nil) {
+        return;
+    }
+    _cachedLaunchReqType = [type copy];
+    _cachedLaunchReqData = [data copy];
+}
+
 - (void)handleAuthCall:(FlutterMethodCall *)call result:(FlutterResult)result {
     SendAuthReq *req = [[SendAuthReq alloc] init];
     req.scope = call.arguments[@"scope"];
     req.state = call.arguments[@"state"];
     NSNumber *type = call.arguments[@"type"];
+
     if ([type intValue] == 0) {
         [WXApi sendReq:req
             completion:^(BOOL success){
-                // do nothing
             }];
     } else if ([type intValue] == 1) {
         UIViewController *viewController = [[[[UIApplication sharedApplication] delegate] window] rootViewController];
@@ -130,9 +181,9 @@ typedef void (^WechatKitWXReqRunnable)(void);
             viewController:viewController
                   delegate:self
                 completion:^(BOOL success){
-                    // do nothing
                 }];
     }
+
     result(nil);
 }
 
@@ -144,6 +195,7 @@ typedef void (^WechatKitWXReqRunnable)(void);
         NSString *noncestr = call.arguments[@"noncestr"];
         NSString *timestamp = call.arguments[@"timestamp"];
         NSString *signature = call.arguments[@"signature"];
+
         [_qrauth Auth:appId
               nonceStr:noncestr
              timeStamp:timestamp
@@ -153,6 +205,7 @@ typedef void (^WechatKitWXReqRunnable)(void);
     } else if ([@"stopQrauth" isEqualToString:call.method]) {
         [_qrauth StopAuth];
     }
+
     result(nil);
 }
 
@@ -160,9 +213,9 @@ typedef void (^WechatKitWXReqRunnable)(void);
                    result:(FlutterResult)result {
     OpenWebviewReq *req = [[OpenWebviewReq alloc] init];
     req.url = call.arguments[@"url"];
+
     [WXApi sendReq:req
         completion:^(BOOL success){
-            // do nothing
         }];
     result(nil);
 }
@@ -172,7 +225,6 @@ typedef void (^WechatKitWXReqRunnable)(void);
     OpenRankListReq *req = [[OpenRankListReq alloc] init];
     [WXApi sendReq:req
         completion:^(BOOL success){
-            // do nothing
         }];
     result(nil);
 }
@@ -184,9 +236,9 @@ typedef void (^WechatKitWXReqRunnable)(void);
     req.scene = [scene intValue];
     req.bText = YES;
     req.text = call.arguments[@"text"];
+
     [WXApi sendReq:req
         completion:^(BOOL success){
-            // do nothing
         }];
     result(nil);
 }
@@ -204,10 +256,10 @@ typedef void (^WechatKitWXReqRunnable)(void);
     if (thumbData != nil) {
         message.thumbData = thumbData.data;
     }
+
     if ([@"shareImage" isEqualToString:call.method]) {
         WXImageObject *mediaObject = [WXImageObject object];
-        FlutterStandardTypedData *imageData =
-            call.arguments[@"imageData"];
+        FlutterStandardTypedData *imageData = call.arguments[@"imageData"];
         if (imageData != nil) {
             mediaObject.imageData = imageData.data;
         } else {
@@ -230,8 +282,7 @@ typedef void (^WechatKitWXReqRunnable)(void);
         message.mediaObject = mediaObject;
     } else if ([@"shareEmoji" isEqualToString:call.method]) {
         WXEmoticonObject *mediaObject = [WXEmoticonObject object];
-        FlutterStandardTypedData *emojiData =
-            call.arguments[@"emojiData"];
+        FlutterStandardTypedData *emojiData = call.arguments[@"emojiData"];
         if (emojiData != nil) {
             mediaObject.emoticonData = emojiData.data;
         } else {
@@ -245,8 +296,7 @@ typedef void (^WechatKitWXReqRunnable)(void);
         mediaObject.musicUrl = call.arguments[@"musicUrl"];
         mediaObject.musicDataUrl = call.arguments[@"musicDataUrl"];
         mediaObject.musicLowBandUrl = call.arguments[@"musicLowBandUrl"];
-        mediaObject.musicLowBandDataUrl =
-            call.arguments[@"musicLowBandDataUrl"];
+        mediaObject.musicLowBandDataUrl = call.arguments[@"musicLowBandDataUrl"];
         message.mediaObject = mediaObject;
     } else if ([@"shareVideo" isEqualToString:call.method]) {
         WXVideoObject *mediaObject = [WXVideoObject object];
@@ -262,8 +312,7 @@ typedef void (^WechatKitWXReqRunnable)(void);
         mediaObject.webpageUrl = call.arguments[@"webpageUrl"];
         mediaObject.userName = call.arguments[@"username"];
         mediaObject.path = call.arguments[@"path"];
-        FlutterStandardTypedData *hdImageData =
-            call.arguments[@"hdImageData"];
+        FlutterStandardTypedData *hdImageData = call.arguments[@"hdImageData"];
         if (hdImageData != nil) {
             mediaObject.hdImageData = hdImageData.data;
         }
@@ -275,10 +324,10 @@ typedef void (^WechatKitWXReqRunnable)(void);
         mediaObject.disableForward = disableForward.boolValue;
         message.mediaObject = mediaObject;
     }
+
     req.message = message;
     [WXApi sendReq:req
         completion:^(BOOL success){
-            // do nothing
         }];
     result(nil);
 }
@@ -294,9 +343,9 @@ typedef void (^WechatKitWXReqRunnable)(void);
 #endif
     req.templateId = call.arguments[@"templateId"];
     req.reserved = call.arguments[@"reserved"];
+
     [WXApi sendReq:req
         completion:^(BOOL success){
-            // do nothing
         }];
     result(nil);
 }
@@ -308,9 +357,9 @@ typedef void (^WechatKitWXReqRunnable)(void);
     req.path = call.arguments[@"path"];
     NSNumber *miniProgramType = call.arguments[@"type"];
     req.miniProgramType = miniProgramType.unsignedIntegerValue;
+
     [WXApi sendReq:req
         completion:^(BOOL success){
-            // do nothing
         }];
     result(nil);
 }
@@ -320,9 +369,9 @@ typedef void (^WechatKitWXReqRunnable)(void);
     WXOpenCustomerServiceReq *req = [[WXOpenCustomerServiceReq alloc] init];
     req.corpid = call.arguments[@"corpId"];
     req.url = call.arguments[@"url"];
+
     [WXApi sendReq:req
         completion:^(BOOL success){
-            // do nothing
         }];
     result(nil);
 }
@@ -333,9 +382,9 @@ typedef void (^WechatKitWXReqRunnable)(void);
     req.businessType = call.arguments[@"businessType"];
     req.query = call.arguments[@"query"];
     req.extInfo = call.arguments[@"extInfo"];
+
     [WXApi sendReq:req
         completion:^(BOOL success){
-            // do nothing
         }];
     result(nil);
 }
@@ -350,6 +399,7 @@ typedef void (^WechatKitWXReqRunnable)(void);
     req.businessType = [businessType unsignedLongValue];
 #endif
     req.queryInfoDic = call.arguments[@"queryInfo"];
+
     result(nil);
 }
 
@@ -363,9 +413,9 @@ typedef void (^WechatKitWXReqRunnable)(void);
     req.timeStamp = [timeStamp intValue];
     req.package = call.arguments[@"package"];
     req.sign = call.arguments[@"sign"];
+
     [WXApi sendReq:req
         completion:^(BOOL success){
-            // do nothing
         }];
     result(nil);
 }
@@ -374,27 +424,57 @@ typedef void (^WechatKitWXReqRunnable)(void);
 #pragma mark - AppDelegate
 
 - (BOOL)application:(UIApplication *)application handleOpenURL:(NSURL *)url {
-    return [WXApi handleOpenURL:url delegate:self];
+    if (!_isRunning) {
+        _pendingOpenURL = url;
+    }
+    BOOL ret = [WXApi handleOpenURL:url delegate:self];
+    return ret;
 }
 
 - (BOOL)application:(UIApplication *)application
               openURL:(NSURL *)url
     sourceApplication:(NSString *)sourceApplication
            annotation:(id)annotation {
-    return [WXApi handleOpenURL:url delegate:self];
+    if (!_isRunning) {
+        _pendingOpenURL = url;
+    }
+    BOOL ret = [WXApi handleOpenURL:url delegate:self];
+    return ret;
 }
 
 - (BOOL)application:(UIApplication *)application
             openURL:(NSURL *)url
             options:
                 (NSDictionary<UIApplicationOpenURLOptionsKey, id> *)options {
-    return [WXApi handleOpenURL:url delegate:self];
+    if (!_isRunning) {
+        _pendingOpenURL = url;
+    }
+    BOOL ret = [WXApi handleOpenURL:url delegate:self];
+    if (!ret && _isRunning && _channel != nil) {
+        NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
+        [dictionary setValue:url.absoluteString forKey:@"messageExt"];
+        [self cacheLaunchReq:@"launch" data:dictionary];
+        [_channel invokeMethod:@"onLaunchFromWXReq" arguments:dictionary];
+    }
+    return ret;
 }
 
 - (BOOL)application:(UIApplication *)application
     continueUserActivity:(NSUserActivity *)userActivity
       restorationHandler:(void (^)(NSArray *_Nonnull))restorationHandler {
-    return [WXApi handleOpenUniversalLink:userActivity delegate:self];
+    if (!_isRunning) {
+        _pendingUserActivity = userActivity;
+    }
+    BOOL ret = [WXApi handleOpenUniversalLink:userActivity delegate:self];
+    if (!ret && _isRunning && _channel != nil) {
+        NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
+        if ([userActivity.webpageURL absoluteString] != nil) {
+            [dictionary setValue:userActivity.webpageURL.absoluteString forKey:@"messageExt"];
+        }
+        [self cacheLaunchReq:@"launch" data:dictionary];
+        [_channel invokeMethod:@"onLaunchFromWXReq" arguments:dictionary];
+    }
+    return ret;
 }
 
 #pragma mark - WXApiDelegate
@@ -407,6 +487,7 @@ typedef void (^WechatKitWXReqRunnable)(void);
         [dictionary setValue:launchFromWXReq.message.messageExt forKey:@"messageExt"];
         [dictionary setValue:launchFromWXReq.lang forKey:@"lang"];
         [dictionary setValue:launchFromWXReq.country forKey:@"country"];
+        [self cacheLaunchReq:@"launch" data:dictionary];
         if (_isRunning) {
             [_channel invokeMethod:@"onLaunchFromWXReq" arguments:dictionary];
         } else {
@@ -422,6 +503,7 @@ typedef void (^WechatKitWXReqRunnable)(void);
         [dictionary setValue:showMessageFromWXReq.message.messageExt forKey:@"messageExt"];
         [dictionary setValue:showMessageFromWXReq.lang forKey:@"lang"];
         [dictionary setValue:showMessageFromWXReq.country forKey:@"country"];
+        [self cacheLaunchReq:@"showMessage" data:dictionary];
         if (_isRunning) {
             [_channel invokeMethod:@"onShowMessageFromWXReq" arguments:dictionary];
         } else {
@@ -441,6 +523,7 @@ typedef void (^WechatKitWXReqRunnable)(void);
     if (resp.errStr != nil) {
         [dictionary setValue:resp.errStr forKey:@"errorMsg"];
     }
+
     if ([resp isKindOfClass:[SendAuthResp class]]) {
         // 授权
         if (resp.errCode == WXSuccess) {
@@ -519,6 +602,7 @@ typedef void (^WechatKitWXReqRunnable)(void);
     if (imageData == nil) {
         imageData = UIImageJPEGRepresentation(image, 1);
     }
+
     NSDictionary *dictionary = @{
         @"imageData" : imageData,
     };
